@@ -1,0 +1,48 @@
+# --- Algorithm 1: Cyclic Coordinate Descent (CCD) ---
+risk_parity_ccd <- function(Sigma, b = NULL, w0 = NULL, max_iter = 1000, tol = 1e-8) {
+  n <- ncol(Sigma)
+  history_log <- list()
+  if (!is.matrix(Sigma) || nrow(Sigma) != n ) { stop("Sigma must be a symmetric matrix.") }
+  diag_sigma <- diag(Sigma)
+  if (any(diag_sigma <= 1e-16)) { warning("CCD: Assets with zero variance found.") }
+  if (is.null(b)) { b <- rep(1/n, n) } else {
+      if (length(b) != n || abs(sum(b) - 1) > 1e-8 || any(b < 0)) { stop("Risk budgets 'b' invalid.") } }
+  if (is.null(w0)) { w <- rep(1/n, n) } else {
+      if (length(w0) != n || any(w0 < 0)) { stop("Initial weights 'w0' invalid.") }
+      if (sum(w0) == 0) { warning("w0 sum zero. Using equal weights."); w <- rep(1/n, n) } else { w <- w0 / sum(w0) } }
+  w[w <= 1e-16] <- 1e-16; w[diag_sigma <= 1e-16] <- 0
+  if(sum(w) > 1e-16) w <- w / sum(w) else w <- rep(1/n, n)
+  rc_perc_init <- calculate_rc_perc(w, Sigma)
+  max_dev_init <- if(!any(is.na(rc_perc_init))) max(abs(rc_perc_init - b), na.rm = TRUE) else NA
+  history_log[[1]] <- data.frame(iteration = 0, max_deviation = max_dev_init, weight_change = NA_real_)
+  converged <- FALSE
+  for (iter in 1:max_iter) {
+    w_old <- w; port_var <- as.numeric(t(w) %*% Sigma %*% w)
+    if (is.na(port_var) || port_var <= 1e-16) { warning("CCD: Portfolio variance near zero/NA. Stopping."); break }
+    for (k in 1:n) {
+        if (diag_sigma[k] <= 1e-16) { w[k] <- 0; next }
+        target_rc_k <- b[k] * port_var; if (target_rc_k < 0) target_rc_k <- 0
+        m <- as.numeric(Sigma %*% w); C_k <- m[k] - Sigma[k, k] * w[k]
+        delta_sqrt_term <- C_k^2 + 4 * Sigma[k, k] * target_rc_k
+        if (is.na(delta_sqrt_term) || delta_sqrt_term < 0 || Sigma[k,k] <= 1e-16) {
+            current_marginal = m[k]
+            if (!is.na(current_marginal) && current_marginal > 1e-8) { w[k] <- target_rc_k / current_marginal
+            } else { w[k] <- 1e-8 }
+            w[k] <- max(w[k], 1e-16)
+        } else { w_k_new <- (-C_k + sqrt(delta_sqrt_term)) / (2 * Sigma[k, k]); w[k] <- max(w_k_new, 1e-16) }
+        if (diag_sigma[k] <= 1e-16) { w[k] <- 0 }
+    }
+    sum_w <- sum(w)
+    if (sum_w > 1e-16) { w <- w / sum_w } else { warning("CCD: Weights summed zero. Stopping."); w <- w_old; break }
+    current_rc_perc <- calculate_rc_perc(w, Sigma); weight_change <- sum(abs(w - w_old))
+    current_max_dev <- if(!any(is.na(current_rc_perc))) max(abs(current_rc_perc - b), na.rm = TRUE) else NA
+    history_log[[iter + 1]] <- data.frame(iteration = iter, max_deviation = current_max_dev, weight_change = weight_change)
+    if (weight_change < tol) { converged <- TRUE; break }
+  }
+  if (!converged && iter == max_iter) { warning(paste("CCD did not converge within", max_iter)) }
+  history_df <- do.call(rbind, history_log)
+  w[w < 1e-16] <- 0
+  if(sum(w) > 1e-16) w <- w / sum(w) else { warning("CCD Final weights sum zero."); w <- rep(1/n, n); w[diag_sigma <= 1e-16] <- 0; if(sum(w)>0) w <- w/sum(w) else w <- rep(1/n, n) }
+  names(w) <- colnames(Sigma) # Ensure names are set
+  return(list(w = as.numeric(w), history = history_df, names = colnames(Sigma)))
+}
